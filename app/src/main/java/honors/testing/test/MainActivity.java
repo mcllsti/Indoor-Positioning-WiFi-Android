@@ -12,6 +12,7 @@ import android.net.wifi.WifiManager;
 import android.support.annotation.NonNull;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+import android.util.Log;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
@@ -22,6 +23,8 @@ import com.lemmingapex.trilateration.TrilaterationFunction;
 import com.mapbox.mapboxsdk.Mapbox;
 import com.mapbox.mapboxsdk.maps.MapView;
 
+import org.apache.commons.math3.exception.TooManyEvaluationsException;
+import org.apache.commons.math3.fitting.leastsquares.GaussNewtonOptimizer;
 import org.apache.commons.math3.fitting.leastsquares.LeastSquaresOptimizer;
 import org.apache.commons.math3.fitting.leastsquares.LevenbergMarquardtOptimizer;
 
@@ -30,12 +33,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 
 import io.indoorlocation.core.IndoorLocation;
 import io.indoorlocation.manual.ManualIndoorLocationProvider;
 import io.mapwize.mapwizeformapbox.AccountManager;
 import io.mapwize.mapwizeformapbox.api.LatLngFloor;
 import io.mapwize.mapwizeformapbox.api.Venue;
+import io.mapwize.mapwizeformapbox.map.FollowUserMode;
 import io.mapwize.mapwizeformapbox.map.MapOptions;
 import io.mapwize.mapwizeformapbox.map.MapwizePlugin;
 import io.mapwize.mapwizeformapbox.map.MapwizePluginFactory;
@@ -48,16 +54,11 @@ public class MainActivity extends AppCompatActivity {
     private MapwizePlugin mapwizePlugin;
     private ManualIndoorLocationProvider manualIndoorLocationProvider;
     private final int REQUEST_LOCATION_PERMISSION = 1;
-
-    private Coord coord = new Coord();
+    double floor = 0.0;
     private WifiManager wifiManager;
-    private ListView listView;
-    private Button buttonScan;
-    private int size = 0;
     private List<ScanResult> results;
-    private ArrayList<String> arrayList = new ArrayList<>();
     private ArrayList<Double> cordinates = new ArrayList<>();
-    private ArrayAdapter adapter;
+    Venue venue;
 
 
     @Override
@@ -73,65 +74,83 @@ public class MainActivity extends AppCompatActivity {
         mapView.setStyleUrl("http://outdoor.mapwize.io/styles/mapwize/style.json?key=" + AccountManager.getInstance().getApiKey());
 
 
-        MapOptions opts = new MapOptions.Builder().centerOnVenue("5c5dc21da17ef7002dffd5e3").restrictContentToVenue("5c5dc21da17ef7002dffd5e3").build();
+        MapOptions opts = new MapOptions.Builder().centerOnVenue("5c5dc21da17ef7002dffd5e3").restrictContentToVenue("5c5dc21da17ef7002dffd5e3").floor(5.0).build();
         mapwizePlugin = MapwizePluginFactory.create(mapView, opts);
+        venue = mapwizePlugin.getVenue();
         wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (!wifiManager.isWifiEnabled()) {
             Toast.makeText(this, "WiFi is disabled ... We need to enable it", Toast.LENGTH_LONG).show();
             wifiManager.setWifiEnabled(true);
         }
+        Toast.makeText(this, "Scanning WiFi ...", Toast.LENGTH_SHORT).show();
         scanWifi();
 
     }
 
-    public double ConvertToWholeFloor(){
+    public double ConvertToWholeFloor(double currentGuess){
+        Log.e("debug","Guessing floor");
 
-        //TODO: IMPLEMENT! THIS!
-        return 6.0;
+        if(currentGuess < 5.667){
+            return 5.0;
+        }
+        else if(currentGuess >= 5.667 && currentGuess < 6.6902){
+            return 6.0;
+        }
+        else if(currentGuess >= 6.692){
+            return 7.0;
+        }
+        return 0.0;
     }
 
     public void loadedmap()
     {
+        Log.e("debug","loaded map");
         setupLocationProvider();
 
 
-        //TODO: Why does this need to be here 2 times? Try and remove it!
-        setupLocationProvider();
 
-
-        //TODO: I THIS THIS LOCATION STUFF IS UESLESS. TRIM THE FAT
-        Location location = new Location(manualIndoorLocationProvider.getName());
-        location.setLatitude(cordinates.get(0));
-        location.setLongitude(cordinates.get(1));
-
-
-        double floor = 0.0;
         if(cordinates.size() > 2)
         {
-            Toast.makeText(this,Double.toString(cordinates.get(3)),Toast.LENGTH_LONG).show();
 
-            if(Arrays.asList(6.0,5.0,7.0).contains(cordinates.get(3))){
-                floor = cordinates.get(3);
+
+            if(Arrays.asList(6.0,5.0,7.0).contains(cordinates.get(2))){
+                floor = cordinates.get(2);
             }
             else
             {
-                floor = ConvertToWholeFloor();
+                floor = ConvertToWholeFloor(cordinates.get(2));
             }
         }
 
+        Toast.makeText(this,Double.toString(floor),Toast.LENGTH_LONG).show();
 
+        Log.e("debug","Current floor: " + Double.toString(cordinates.get(2)));
         IndoorLocation indoorLocation = new IndoorLocation(manualIndoorLocationProvider.getName(), cordinates.get(0), cordinates.get(1), floor, System.currentTimeMillis());
+
         manualIndoorLocationProvider.setIndoorLocation(indoorLocation);
-        Toast.makeText(this, "Positioned", Toast.LENGTH_LONG).show();
+        mapwizePlugin.setFollowUserMode(FollowUserMode.FOLLOW_USER);
+
+
+
+
     }
 
+    public void setFloor(){
 
+        mapwizePlugin.setFloorForVenue(floor,venue);
+        //mapwizePlugin.setFloor(cordinates.get(2));
+
+    }
 
     private void scanWifi() {
-        arrayList.clear();
+
+        if(results != null){
+            results.clear();
+        }
+
         registerReceiver(wifiReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
         wifiManager.startScan();
-        Toast.makeText(this, "Scanning WiFi ...", Toast.LENGTH_SHORT).show();
+
     }
 
 
@@ -251,7 +270,7 @@ public class MainActivity extends AppCompatActivity {
 
     public double[] trilateration(ArrayList<DistancesPositions> list)
     {
-
+        Log.e("debug","Proforming trilateration");
         double[] distances = new double[list.size()];
         double[][] positions = new double[list.size()][2];
         int i = 0;
@@ -262,18 +281,63 @@ public class MainActivity extends AppCompatActivity {
             positions[i] = e.getPositionArray();
             i++;
         }
+        double[] centroid = new double[3];
 
+        try{
+            Log.e("debug","Caught trilateration " + list.size());
+            NonLinearLeastSquaresSolver solver = new NonLinearLeastSquaresSolver(new TrilaterationFunction(positions, distances), new LevenbergMarquardtOptimizer());
+            LeastSquaresOptimizer.Optimum optimum = solver.solve();
+            centroid = optimum.getPoint().toArray();
 
-        NonLinearLeastSquaresSolver solver = new NonLinearLeastSquaresSolver(new TrilaterationFunction(positions, distances), new LevenbergMarquardtOptimizer());
-        LeastSquaresOptimizer.Optimum optimum = solver.solve();
+        }
+        catch(Exception e){
+            Log.e("debug","Caught trilateration " + e.toString());
+            Log.e("debug","Caught trilateration " + list.size());
+            if(list.size() == 2)
+            {
+                DistancesPositions x = list.get(0);
+                x.position[0] = ((x.position[0] + list.get(1).position[0])/2);
+                x.position[1] = ((x.position[1] + list.get(1).position[1])/2);
+                x.position[2] = ((x.position[2] + list.get(1).position[2])/2);
+                x.distance = ((x.distance + list.get(1).distance)/2);
+                list.add(x);
 
-        double[] centroid = optimum.getPoint().toArray();
+                x = list.get(0);
+                x.position[0] = ((x.position[0] + list.get(1).position[0] + list.get(2).position[0])/3);
+                x.position[1] = ((x.position[1] + list.get(1).position[1] + list.get(2).position[1])/3);
+                x.position[2] = ((x.position[2] + list.get(1).position[2] + list.get(2).position[2])/3);
+                x.distance = ((x.distance + list.get(1).distance + list.get(2).distance)/2);
+                list.add(x);
+
+            }
+            else{
+
+                DistancesPositions x = list.get(0);
+                x.position[0] = ((x.position[0] + list.get(1).position[0])/2);
+                x.position[1] = ((x.position[1] + list.get(1).position[1])/2);
+                x.position[2] = ((x.position[2] + list.get(1).position[2])/2);
+                x.distance = ((x.distance + list.get(1).distance)/2);
+                list.add(x);
+            }
+
+            centroid = list.get(3).position;
+/*            Timer timer = new Timer();
+            timer.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    scanWifi();
+                }
+            }, 10000);*/
+        }
         return centroid;
+
+
     }
 
     BroadcastReceiver wifiReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            Log.e("debug","Recieved wifi");
             results = wifiManager.getScanResults();
             ArrayList<RouterMap> allRouters = setUp();
 
@@ -299,7 +363,7 @@ public class MainActivity extends AppCompatActivity {
 
                     }
                     catch(Exception e) {
-                        //Exclusivley used for breaking
+                        Toast.makeText(getApplicationContext(),"hit here",Toast.LENGTH_SHORT).show();
                     }
 
                     if(!(positions[i][0] == 0 && positions[i][1] == 0))
@@ -311,13 +375,30 @@ public class MainActivity extends AppCompatActivity {
 
             }
 
+            if(listy.size() < 2){
 
-            double[] centeroid = trilateration(listy);
-            for (int j = 0; j < centeroid.length; j++) {
-                cordinates.add(centeroid[j]);
+                Toast.makeText(getApplicationContext(), "Not enough router points to determin position " + listy.size(), Toast.LENGTH_SHORT).show();
+                Timer timer = new Timer();
+                timer.schedule(new TimerTask() {
+                    @Override
+                    public void run() {
+                        scanWifi();
+                    }
+                }, 10000);
 
             }
-            loadedmap();
+            else{
+                double[] centeroid = trilateration(listy);
+                if(centeroid != null){
+                    for (int j = 0; j < centeroid.length; j++) {
+                        cordinates.add(centeroid[j]);
+
+                    }
+                    loadedmap();
+                    setFloor();
+
+            }
+
         }
 
 
