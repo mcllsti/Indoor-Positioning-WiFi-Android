@@ -1,5 +1,14 @@
 package honors.testing.test;
 
+/**
+ * Daryl McAllister
+ * S1222204
+ * Indoor Positioning System
+ * Honors Project
+ * Iain Lambie
+ */
+
+
 import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -9,6 +18,7 @@ import android.content.pm.PackageManager;
 import android.location.Location;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiManager;
+import android.net.wifi.rtt.WifiRttManager;
 import android.support.annotation.NonNull;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
@@ -64,31 +74,45 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        //Mapwize is built on mapbox so must instilize this
         Mapbox.getInstance(this, "pk.mapwize");
         setContentView(R.layout.activity_main);
         requestLocationPermission();
 
+        //Getting our map view
         mapView = findViewById(R.id.mapview);
         mapView.onCreate(savedInstanceState);
 
+        //Setting style in acocrdance with mapwize
         mapView.setStyleUrl("http://outdoor.mapwize.io/styles/mapwize/style.json?key=" + AccountManager.getInstance().getApiKey());
 
 
+        //Setting the venue our indoor map will be based on
         MapOptions opts = new MapOptions.Builder().centerOnVenue("5c5dc21da17ef7002dffd5e3").restrictContentToVenue("5c5dc21da17ef7002dffd5e3").floor(5.0).build();
         mapwizePlugin = MapwizePluginFactory.create(mapView, opts);
         venue = mapwizePlugin.getVenue();
+
+        //Setting up wifimanager for scanning
         wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (!wifiManager.isWifiEnabled()) {
             Toast.makeText(this, "WiFi is disabled ... We need to enable it", Toast.LENGTH_LONG).show();
             wifiManager.setWifiEnabled(true);
         }
+
+
         Toast.makeText(this, "Scanning WiFi ...", Toast.LENGTH_SHORT).show();
-        scanWifi();
+        scanWifi(); //scan to start positioning
 
     }
 
+    /**
+     * Takes a none round number and coverts it to a rounded state to be used to position a user on a floor
+     * Returns the whole floor number depending if the trilaterated number is within certain regions
+     * @param currentGuess Non whole number floor
+     * @return
+     */
     public double ConvertToWholeFloor(double currentGuess){
-        Log.e("debug","Guessing floor");
 
         if(currentGuess < 5.667){
             return 5.0;
@@ -102,17 +126,17 @@ public class MainActivity extends AppCompatActivity {
         return 0.0;
     }
 
+    /**
+     * Updates map with determined position of a user
+     */
     public void loadedmap()
     {
-        Log.e("debug","loaded map");
-        setupLocationProvider();
 
+        setupLocationProvider(); //needed for positioning
 
-
+        //ensuring we have a whole number floor
         if(cordinates.size() > 2)
         {
-
-
             if(Arrays.asList(6.0,5.0,7.0).contains(cordinates.get(2))){
                 floor = cordinates.get(2);
             }
@@ -122,66 +146,239 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        Toast.makeText(this,Double.toString(floor),Toast.LENGTH_LONG).show();
 
-        Log.e("debug","Current floor: " + Double.toString(cordinates.get(2)));
+
+        //set the location from cordinates and floor
         IndoorLocation indoorLocation = new IndoorLocation(manualIndoorLocationProvider.getName(), cordinates.get(0), cordinates.get(1), floor, System.currentTimeMillis());
 
         manualIndoorLocationProvider.setIndoorLocation(indoorLocation);
         mapwizePlugin.setFollowUserMode(FollowUserMode.FOLLOW_USER);
 
+        //Output used in testing to see cordinates
+        String coords = Double.toString(indoorLocation.getLatitude()) + "," + Double.toString(indoorLocation.getLongitude());
+        Toast.makeText(this,coords,Toast.LENGTH_LONG).show();
 
-
-
+        //Ensure map switches to correct floor user is on
+        mapwizePlugin.setFloor(indoorLocation.getFloor());
     }
 
-    public void setFloor(){
-
-        mapwizePlugin.setFloorForVenue(floor,venue);
-        //mapwizePlugin.setFloor(cordinates.get(2));
-
-    }
-
+    /**
+     * ScanWifi method will be used almost exclusively to start a wifi scan
+     */
     private void scanWifi() {
 
+        //Clearing results to ensure accurate scan
         if(results != null){
             results.clear();
         }
 
         registerReceiver(wifiReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
-        wifiManager.startScan();
+        wifiManager.startScan(); //Start scan is deprecated and will be eventually removed. Should be changed if application is to continue.
+        //TODO: Find another method to scan for future project development. StartScans deprecated status comes with limitations such as scanning frequency limits
 
     }
 
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-
-        // Forward results to EasyPermissions
-        EasyPermissions.onRequestPermissionsResult(requestCode, permissions, grantResults, this);
-    }
-
-    @AfterPermissionGranted(REQUEST_LOCATION_PERMISSION)
-    public void requestLocationPermission() {
-        String[] perms = {Manifest.permission.ACCESS_FINE_LOCATION};
-        if (EasyPermissions.hasPermissions(this, perms)) {
-            Toast.makeText(this, "Permission already granted", Toast.LENGTH_SHORT).show();
-        } else {
-            EasyPermissions.requestPermissions(this, "Please grant the location permission", REQUEST_LOCATION_PERMISSION, perms);
-        }
-    }
-
+    /**
+     * Used by Mapwize for location providing and indor locationing
+     */
     private void setupLocationProvider() {
         manualIndoorLocationProvider = new ManualIndoorLocationProvider();
         mapwizePlugin.setLocationProvider(manualIndoorLocationProvider);
     }
 
-    public double calculateDistance(double signalLevelInDb, double freqInMHz) {
-        double exp = (27.55 - (20 * Math.log10(freqInMHz)) + Math.abs(signalLevelInDb)) / 20.0;
-        return (Math.pow(10.0, exp)) / 100000;
+
+    /**
+     * Proforms trilateration on N points providing within a ArrayList
+     *
+     * Created with the following resources:
+     * https://github.com/lemmingapex/trilateration
+     *
+     *
+     * @param list list of positions and distances
+     * @return
+     */
+    public double[] trilateration(ArrayList<DistancesPositions> list)
+    {
+        //setting up our distances and positions in a more assesiable format
+        double[] distances = new double[list.size()];
+        double[][] positions = new double[list.size()][list.get(0).position.length];
+        int i = 0;
+        for(DistancesPositions e : list)
+        {
+            distances[i] = e.getDistance();
+            positions[i] = e.getPositionArray();
+            i++;
+        }
+
+
+
+        double[] centroid;
+
+        try{ //to ensure program does not break
+
+            //Solver which solves trilateration
+            NonLinearLeastSquaresSolver solver = new NonLinearLeastSquaresSolver(new TrilaterationFunction(positions, distances), new LevenbergMarquardtOptimizer());
+            LeastSquaresOptimizer.Optimum optimum = solver.solve();
+            centroid = optimum.getPoint().toArray();
+
+        }
+        catch(Exception e){
+            //If trilateration cannot be done then return an averaged position
+            centroid = list.get(list.size()-1).position;
+        }
+        return centroid;
+
     }
 
+    /**
+     * Brocast reciever is an class which is called upon a completed scan
+     */
+    BroadcastReceiver wifiReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+
+            unregisterReceiver(this); //unregistering in case of future scans
+
+            results = wifiManager.getScanResults(); //getting results
+            ArrayList<RouterMap> allRouters = setUp(); //setting up our Uni router infestructure
+
+            ArrayList<DistancesPositions> listy = new ArrayList<DistancesPositions>();
+            double[][] positions = new double[20][2]; //Never be more than 20 posisitions
+
+
+            String checker = wifiManager.getConnectionInfo().getSSID();
+            int i = 0;
+
+            //For each of our results check if it is on our network and if so and is part of our acceptable routers
+            //add its position and distance to our list for trilateration
+            for (ScanResult scanResult : results) {
+                if (checker.equals('"' + scanResult.SSID + '"')) {
+
+                    try {
+                        positions[i] = allRouters.stream().filter(item -> item.getBSSID().equals(scanResult.BSSID)).findFirst().get().getCordinates();
+
+                        listy.add(new DistancesPositions((double) scanResult.level, scanResult.frequency, positions[i]));
+
+                    } catch (Exception e) {
+
+                    }
+
+                    if (!(positions[i][0] == 0 && positions[i][1] == 0)) { //used to sync positions and distances
+                        i++;
+                    }
+                }
+            }
+
+            if (listy.size() < 2) {
+                //If there is less than 2 router points we cannot proceed so we have to scan again
+                Toast.makeText(getApplicationContext(), "Not enough router points to determine position " , Toast.LENGTH_SHORT).show();
+                Timer timer = new Timer();
+                timer.schedule(new TimerTask() {
+                    @Override
+                    public void run() {
+                        scanWifi(); //This must change as there is limit on scans due to deprecated
+                        return; //get out of method
+                    }
+                }, 10000);
+            }
+
+            else if(listy.size() > 1 && listy.size() < 4){
+                listy = BulkResults(listy); //have to bulk our results if we have less than 4 for trilateration to work
+            }
+
+            double[] centeroid = trilateration(listy);
+            if (centeroid != null) { //as long as not null
+                for (int j = 0; j < centeroid.length; j++) {
+                    cordinates.add(centeroid[j]);
+                }
+                loadedmap();
+            }
+        } };
+
+    /**
+     * Used to bulk our results by adding false results that are determined by averages of previous results which should not affect our overall acuracy.
+     * @param listy our current list that needs bulking
+     * @return
+     */
+    private ArrayList<DistancesPositions> BulkResults(ArrayList<DistancesPositions> listy) {
+        if(listy.size() == 2)
+        {
+            //If there is 2 then we need to add another 2 for trilateration
+            DistancesPositions x = listy.get(0);
+            x.position[0] = ((x.position[0] + listy.get(1).position[0])/2);
+            x.position[1] = ((x.position[1] + listy.get(1).position[1])/2);
+            x.position[2] = ((x.position[2] + listy.get(1).position[2])/2);
+            x.distance = ((x.distance + listy.get(1).distance)/2);
+            listy.add(x);
+
+            x = listy.get(0);
+            x.position[0] = ((x.position[0] + listy.get(1).position[0] + listy.get(2).position[0])/3);
+            x.position[1] = ((x.position[1] + listy.get(1).position[1] + listy.get(2).position[1])/3);
+            x.position[2] = ((x.position[2] + listy.get(1).position[2] + listy.get(2).position[2])/3);
+            x.distance = ((x.distance + listy.get(1).distance + listy.get(2).distance)/3);
+            listy.add(x);
+
+        }
+        else{
+            //if there is three we only need one
+            DistancesPositions x = listy.get(0);
+            x.position[0] = ((x.position[0] + listy.get(1).position[0])/2);
+            x.position[1] = ((x.position[1] + listy.get(1).position[1])/2);
+            x.position[2] = ((x.position[2] + listy.get(1).position[2])/2);
+            x.distance = ((x.distance + listy.get(1).distance)/2);
+            listy.add(x);
+        }
+
+        return listy;
+    }
+
+
+    @Override
+    protected void onStart() { //LIFECYCLE METHOD
+        super.onStart();
+        mapView.onStart();
+    }
+
+    @Override
+    public void onResume() { //LIFECYCLE METHOD
+        super.onResume();
+        mapView.onResume();
+    }
+
+    @Override
+    public void onPause() { //LIFECYCLE METHOD
+        super.onPause();
+        mapView.onPause();
+    }
+
+    @Override
+    protected void onStop() { //LIFECYCLE METHOD
+        super.onStop();
+        mapView.onStop();
+    }
+
+    @Override
+    public void onLowMemory() { //LIFECYCLE METHOD
+        super.onLowMemory();
+        mapView.onLowMemory();
+    }
+
+    @Override
+    protected void onDestroy() { //LIFECYCLE METHOD
+        super.onDestroy();
+        mapView.onDestroy();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) { //LIFECYCLE METHOD
+        super.onSaveInstanceState(outState);
+        mapView.onSaveInstanceState(outState);
+    }
+
+    /**
+     * Sets up an Arraylist with our known University Wifi Infistructure
+     * @return
+     */
     public ArrayList<RouterMap> setUp()
     {
         ArrayList<RouterMap> allRouters = new ArrayList<RouterMap>();
@@ -266,185 +463,33 @@ public class MainActivity extends AppCompatActivity {
         return allRouters;
     }
 
+    /**
+     * Overriding permissions to allow us to acess WIFI and locations
+     * @param requestCode
+     * @param permissions
+     * @param grantResults
+     */
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
+        // Forward results to EasyPermissions
+        EasyPermissions.onRequestPermissionsResult(requestCode, permissions, grantResults, this);
+    }
 
-    public double[] trilateration(ArrayList<DistancesPositions> list)
-    {
-        Log.e("debug","Proforming trilateration");
-        double[] distances = new double[list.size()];
-        double[][] positions = new double[list.size()][2];
-        int i = 0;
-
-        for(DistancesPositions e : list)
-        {
-            distances[i] = e.getDistance();
-            positions[i] = e.getPositionArray();
-            i++;
+    /**
+     * Used to request location permissions on newer devices for our positioning and wifi
+     */
+    @AfterPermissionGranted(REQUEST_LOCATION_PERMISSION)
+    public void requestLocationPermission() {
+        String[] perms = {Manifest.permission.ACCESS_FINE_LOCATION};
+        if (EasyPermissions.hasPermissions(this, perms)) {
+            Toast.makeText(this, "Permission already granted", Toast.LENGTH_SHORT).show();
+        } else {
+            EasyPermissions.requestPermissions(this, "Please grant the location permission", REQUEST_LOCATION_PERMISSION, perms);
         }
-        double[] centroid = new double[3];
-
-        try{
-            Log.e("debug","Caught trilateration " + list.size());
-            NonLinearLeastSquaresSolver solver = new NonLinearLeastSquaresSolver(new TrilaterationFunction(positions, distances), new LevenbergMarquardtOptimizer());
-            LeastSquaresOptimizer.Optimum optimum = solver.solve();
-            centroid = optimum.getPoint().toArray();
-
-        }
-        catch(Exception e){
-            Log.e("debug","Caught trilateration " + e.toString());
-            Log.e("debug","Caught trilateration " + list.size());
-            if(list.size() == 2)
-            {
-                DistancesPositions x = list.get(0);
-                x.position[0] = ((x.position[0] + list.get(1).position[0])/2);
-                x.position[1] = ((x.position[1] + list.get(1).position[1])/2);
-                x.position[2] = ((x.position[2] + list.get(1).position[2])/2);
-                x.distance = ((x.distance + list.get(1).distance)/2);
-                list.add(x);
-
-                x = list.get(0);
-                x.position[0] = ((x.position[0] + list.get(1).position[0] + list.get(2).position[0])/3);
-                x.position[1] = ((x.position[1] + list.get(1).position[1] + list.get(2).position[1])/3);
-                x.position[2] = ((x.position[2] + list.get(1).position[2] + list.get(2).position[2])/3);
-                x.distance = ((x.distance + list.get(1).distance + list.get(2).distance)/2);
-                list.add(x);
-
-            }
-            else{
-
-                DistancesPositions x = list.get(0);
-                x.position[0] = ((x.position[0] + list.get(1).position[0])/2);
-                x.position[1] = ((x.position[1] + list.get(1).position[1])/2);
-                x.position[2] = ((x.position[2] + list.get(1).position[2])/2);
-                x.distance = ((x.distance + list.get(1).distance)/2);
-                list.add(x);
-            }
-
-            centroid = list.get(3).position;
-/*            Timer timer = new Timer();
-            timer.schedule(new TimerTask() {
-                @Override
-                public void run() {
-                    scanWifi();
-                }
-            }, 10000);*/
-        }
-        return centroid;
-
-
     }
 
-    BroadcastReceiver wifiReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            Log.e("debug","Recieved wifi");
-            results = wifiManager.getScanResults();
-            ArrayList<RouterMap> allRouters = setUp();
-
-            ArrayList<DistancesPositions> listy = new ArrayList<DistancesPositions>();
-            double[][] positions = new double[20][2];
 
 
-            unregisterReceiver(this);
-            String checker = wifiManager.getConnectionInfo().getSSID();
-            int i = 0;
-
-            for (ScanResult scanResult : results) {
-                if(checker.equals('"'+scanResult.SSID+'"'))
-                {
-                    DecimalFormat df = new DecimalFormat("#.##");
-
-
-                    try {
-                        positions[i] = allRouters.stream().filter(item -> item.getBSSID().equals(scanResult.BSSID)).findFirst().get().getCordinates();
-
-                        listy.add(new DistancesPositions(calculateDistance((double)scanResult.level,
-                                scanResult.frequency),positions[i]));
-
-                    }
-                    catch(Exception e) {
-                        Toast.makeText(getApplicationContext(),"hit here",Toast.LENGTH_SHORT).show();
-                    }
-
-                    if(!(positions[i][0] == 0 && positions[i][1] == 0))
-                    {
-                        i++;
-                    }
-
-                }
-
-            }
-
-            if(listy.size() < 2){
-
-                Toast.makeText(getApplicationContext(), "Not enough router points to determin position " + listy.size(), Toast.LENGTH_SHORT).show();
-                Timer timer = new Timer();
-                timer.schedule(new TimerTask() {
-                    @Override
-                    public void run() {
-                        scanWifi();
-                    }
-                }, 10000);
-
-            }
-            else{
-                double[] centeroid = trilateration(listy);
-                if(centeroid != null){
-                    for (int j = 0; j < centeroid.length; j++) {
-                        cordinates.add(centeroid[j]);
-
-                    }
-                    loadedmap();
-                    setFloor();
-
-            }
-
-        }
-
-
-
-    };
-
-
-    @Override
-    protected void onStart() {
-        super.onStart();
-        mapView.onStart();
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        mapView.onResume();
-    }
-
-    @Override
-    public void onPause() {
-        super.onPause();
-        mapView.onPause();
-    }
-
-    @Override
-    protected void onStop() {
-        super.onStop();
-        mapView.onStop();
-    }
-
-    @Override
-    public void onLowMemory() {
-        super.onLowMemory();
-        mapView.onLowMemory();
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        mapView.onDestroy();
-    }
-
-    @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
-        mapView.onSaveInstanceState(outState);
-    }
 }
