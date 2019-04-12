@@ -17,7 +17,6 @@ public class RouterMap {
 
     private double[] cordinates;
     private String BSSID;
-
     /**
      * Overloaded Constructor
      * @param cord array containing cordinates
@@ -36,10 +35,4 @@ public class RouterMap {
     public String getBSSID() {
         return this.BSSID;
     }
-
-
-
-
-
-
 }
